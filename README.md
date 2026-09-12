@@ -1,3 +1,4 @@
+
 # Phân tích Điểm đen Tai nạn Giao thông Đô thị với Python
  
 Trong dự án này, tôi sử dụng bộ dữ liệu **US Accidents (2016–2023)** để phân tích tai nạn giao thông, đóng vai trò chuyên viên phân tích của Sở Giao thông vận tải thành phố. Bộ dữ liệu chứa hơn 7.7 triệu bản ghi tai nạn, bao gồm thời gian, vị trí, mức độ nghiêm trọng, điều kiện thời tiết và hạ tầng giao thông tại thời điểm xảy ra tai nạn.
@@ -14,4 +15,4 @@ Với bộ dữ liệu này, tôi sẽ tập trung phân tích các câu hỏi s
 - Những điều kiện đường (giao lộ, đèn tín hiệu, vòng xuyến...) nào liên quan đến tai nạn nghiêm trọng nhất?
 - Tai nạn xảy ra nhiều hơn vào ban ngày hay ban đêm?
 - Top 10–20 điểm đen cụ thể (theo tọa độ) cần ưu tiên can thiệp trước mùa mưa bão?
- 
+
