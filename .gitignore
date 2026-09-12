@@ -56,4 +56,8 @@ Thumbs.db
 # --- Dataset & Data Files (Tránh đẩy file dữ liệu nặng/thô lên Git) ---
 data/raw/*
 data/*.csv
+data/*.parquet
+data/*.zip
+data/*.tar.gz
 !data/.gitkeep
+!data/raw/.gitkeep
