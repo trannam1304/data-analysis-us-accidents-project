@@ -1,6 +1,7 @@
 # Core Data Analysis
 pandas>=2.0.0
 numpy>=1.24.0
+scipy>=1.10.0
 
 # Kaggle Dataset Downloader
 kagglehub>=0.2.0
