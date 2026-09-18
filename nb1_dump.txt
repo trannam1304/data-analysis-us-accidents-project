@@ -1,0 +1,387 @@
+
+=== Cell 4 (code) ===
+# ============================================================
+# 1. XÁC ĐỊNH VỊ TRÍ DỮ LIỆU (HỖ TRỢ CẢ LOCAL & KAGGLEHUB)
+# ============================================================
+# Thứ tự ưu tiên:
+# 1. Tìm trong thư mục data/raw hoặc data/ của dự án (nếu đã tải thủ công)
+# 2. Tự động tải từ Kaggle qua KaggleHub nếu chưa có file local
+
+# Tìm thư mục gốc dự án dù chạy từ root hay từ notebooks/
+cwd = Path.cwd()
+project_root = cwd if (cwd / "data").is_dir() else (cwd.parent if (cwd.parent / "data").is_dir() else cwd)
+search_dirs = [project_root / "data" / "raw", project_root / "data"]
+
+csv_path = None
+for d in search_dirs:
+    if d.exists():
+        found = [f for f in d.glob("*.csv") if "accident" in f.name.lower() or "us" in f.name.lower()]
+        if found:
+            csv_path = str(max(found, key=lambda p: p.stat().st_size))
+            print(f"[THÔNG BÁO] Phát hiện file CSV dữ liệu thô tại local: {csv_path}")
+            break
+
+# Nếu chưa có file local, tự động tải qua KaggleHub
+if not csv_path:
+    print("[THÔNG BÁO] Không tìm thấy file CSV tại local. Tiến hành tải từ Kaggle qua KaggleHub...")
+    try:
+        dataset_path = kagglehub.dataset_download("sobhanmoosavi/us-accidents")
+        print("Dataset location:", dataset_path)
+        files = os.listdir(dataset_path)
+        csv_files = [file for file in files if file.lower().endswith(".csv")]
+        if not csv_files:
+            raise FileNotFoundError("Khong tim thay file CSV trong dataset Kaggle.")
+        csv_path = max([os.path.join(dataset_path, file) for file in csv_files], key=os.path.getsize)
+    except Exception as e:
+        raise RuntimeError(
+            f"Lỗi khi tải dataset qua KaggleHub: {e}\n"
+            f"-> HƯỚNG DẪN DÀNH CHO THÀNH VIÊN:\n"
+            f"   1. Tự tải file ZIP từ: https://www.kaggle.com/datasets/sobhanmoosavi/us-accidents\n"
+            f"   2. Giải nén file 'US_Accidents_March23.csv'\n"
+            f"   3. Copy file CSV vào thư mục 'data/raw/' của dự án\n"
+            f"   4. Chạy lại cell này!"
+        )
+
+print("\nLoading CSV:")
+print(csv_path)
+
+# ============================================================
+# 2. Đọc các cột cần thiết
+# ============================================================
+USECOLS = [
+    "ID", "Severity", "Start_Time", "End_Time",
+    "Start_Lat", "Start_Lng", "City", "County", "State", "Zipcode",
+    "Temperature(F)", "Humidity(%)", "Pressure(in)", "Visibility(mi)",
+    "Wind_Speed(mph)", "Precipitation(in)", "Weather_Condition",
+    "Amenity", "Crossing", "Junction", "Railway", "Stop", "Traffic_Signal",
+    "Sunrise_Sunset",
+]
+
+# Kiểm tra tên cột trước khi đọc để tránh lỗi nếu Kaggle cập nhật dataset.
+available_columns = pd.read_csv(csv_path, nrows=0).columns.tolist()
+missing_required_columns = [col for col in USECOLS if col not in available_columns]
+
+if missing_required_columns:
+    print("\nCanh bao - cac cot khong ton tai:")
+    print(missing_required_columns)
+
+USECOLS_EXISTING = [col for col in USECOLS if col in available_columns]
+
+df_raw = pd.read_csv(
+    csv_path,
+    usecols=USECOLS_EXISTING,
+    low_memory=False
+)
+
+print("\nDataset shape:")
+print(df_raw.shape)
+
+print("\nFirst 5 records:")
+df_raw.head()
+
+
+=== Cell 6 (code) ===
+# Chuẩn hóa các cột thời gian về datetime.
+df_raw["Start_Time"] = pd.to_datetime(
+    df_raw["Start_Time"], errors="coerce", format="mixed"
+)
+df_raw["End_Time"] = pd.to_datetime(
+    df_raw["End_Time"], errors="coerce", format="mixed"
+)
+
+# Loại các dòng không parse được Start_Time.
+n_before = len(df_raw)
+df_raw = df_raw.dropna(subset=["Start_Time"]).copy()
+print(f"Loai {n_before - len(df_raw):,} dong do Start_Time khong hop le.")
+
+# Dynamic date filtering:
+# lấy mốc thời gian mới nhất thực sự có trong dataset rồi lùi lại 2 năm.
+latest_date = df_raw["Start_Time"].max()
+cutoff_date = latest_date - pd.DateOffset(years=2)
+
+print(f"Moc thoi gian gan nhat trong dataset : {latest_date}")
+print(f"Cutoff (2 nam truoc moc gan nhat)     : {cutoff_date}")
+
+df_recent = df_raw[df_raw["Start_Time"] >= cutoff_date].copy()
+
+# Giải phóng bộ nhớ RAM của df_raw (rất quan trọng với máy 8GB RAM)
+import gc
+del df_raw
+gc.collect()
+
+print(
+    f"So dong sau khi loc 2 nam gan nhat    : {len(df_recent):,} / "
+    f"{n_before:,} ({len(df_recent) / n_before:.1%})"
+)
+
+df_recent.sort_values("Start_Time", inplace=True)
+df_recent.reset_index(drop=True, inplace=True)
+
+print("\nKhoang thoi gian sau khi loc:")
+print(df_recent["Start_Time"].min(), "->", df_recent["Start_Time"].max())
+
+
+=== Cell 7 (markdown) ===
+## 4. Xử lý dữ liệu thiếu — chiến lược phân tầng (tiered strategy)
+
+Thay vì áp dụng một cách xử lý duy nhất cho toàn bộ dataset, ta phân loại các cột theo
+**tỉ lệ thiếu (% missing)** rồi áp dụng chiến lược phù hợp cho từng nhóm:
+
+| Tỉ lệ thiếu | Chiến lược | Lý do |
+|---|---|---|
+| **> 40%** | Loại bỏ cột | Quá nhiều thông tin bị mất, impute sẽ gây nhiễu/sai lệch lớn |
+| **5% – 40%** | Impute (median cho numeric, mode cho categorical) | Đủ dữ liệu để ước lượng hợp lý, không nên bỏ vì mất quá nhiều dòng |
+| **< 5%** | Loại bỏ dòng (row-wise drop) | Tỉ lệ nhỏ, drop dòng không ảnh hưởng đáng kể đến kích thước mẫu |
+
+Ngưỡng (40% / 5%) có thể điều chỉnh tùy đặc thù dữ liệu — được ghi rõ trong biến `HIGH_MISSING_THRESHOLD`
+và `LOW_MISSING_THRESHOLD` bên dưới để dễ tinh chỉnh và giải trình trong báo cáo.
+
+
+=== Cell 8 (code) ===
+HIGH_MISSING_THRESHOLD = 0.40   # > 40% missing -> drop column
+LOW_MISSING_THRESHOLD = 0.05    # < 5% missing  -> drop rows
+
+missing_pct = df_recent.isna().mean().sort_values(ascending=False)
+missing_report = missing_pct[missing_pct > 0].to_frame("missing_pct")
+missing_report["missing_pct"] = (missing_report["missing_pct"] * 100).round(2)
+print("Bao cao ty le thieu du lieu theo cot:")
+missing_report
+
+
+=== Cell 9 (code) ===
+cols_high_missing = missing_pct[missing_pct > HIGH_MISSING_THRESHOLD].index.tolist()
+cols_mid_missing = missing_pct[
+    (missing_pct <= HIGH_MISSING_THRESHOLD) &
+    (missing_pct >= LOW_MISSING_THRESHOLD)
+].index.tolist()
+cols_low_missing = missing_pct[
+    (missing_pct < LOW_MISSING_THRESHOLD) &
+    (missing_pct > 0)
+].index.tolist()
+
+print("Cot loai bo (>40% missing)      :", cols_high_missing)
+print("Cot impute (5%-40% missing)     :", cols_mid_missing)
+print("Cot drop rows (<5% missing)     :", cols_low_missing)
+
+# Tier 1: loại bỏ các cột có tỷ lệ thiếu quá cao.
+df_clean = df_recent.drop(columns=cols_high_missing).copy()
+
+# Tier 2: impute.
+# Numeric -> median; categorical/object -> mode.
+for col in cols_mid_missing:
+    if col not in df_clean.columns:
+        continue
+
+    if pd.api.types.is_numeric_dtype(df_clean[col]):
+        fill_value = df_clean[col].median()
+    else:
+        mode_values = df_clean[col].mode(dropna=True)
+        fill_value = mode_values.iloc[0] if not mode_values.empty else "Unknown"
+
+    df_clean[col] = df_clean[col].fillna(fill_value)
+
+# Tier 3: với các cột có <5% missing, loại bỏ dòng còn thiếu.
+low_missing_existing = [c for c in cols_low_missing if c in df_clean.columns]
+if low_missing_existing:
+    df_clean.dropna(subset=low_missing_existing, inplace=True)
+
+print(f"\nKich thuoc truoc xu ly missing: {df_recent.shape}")
+print(f"Kich thuoc sau xu ly missing  : {df_clean.shape}")
+print(f"So gia tri missing con lai    : {int(df_clean.isna().sum().sum()):,}")
+
+
+=== Cell 13 (code) ===
+# ============================================================
+# MỤC 5.2 — FEATURE ENGINEERING: ĐẶC TRƯNG THỜI TIẾT VÀ ĐƯỜNG BỘ
+# ============================================================
+# Xây dựng các đặc trưng phái sinh từ thời tiết và hạ tầng đường bộ
+# phục vụ phân tích mô tả (Member 3) và mô hình hóa (Member 4).
+# Căn cứ: Data dictionary của Kaggle US Accidents (2016–2023).
+# ============================================================
+
+# ---------- 0. Kiểm tra tiền đề ----------
+assert "df_clean" in globals(), (
+    "Chưa có df_clean. Hãy chạy lại các mục 2–5.1 trước."
+)
+# Đảm bảo các cột weather gốc tồn tại
+required_weather_cols = ["Precipitation(in)", "Weather_Condition",
+                         "Visibility(mi)", "Temperature(F)"]
+for col in required_weather_cols:
+    assert col in df_clean.columns, (
+        f"df_clean thiếu cột {col}. Kiểm tra lại USECOLS ở Mục 2."
+    )
+
+# ---------- 1. Đặc trưng khoảng thời gian trong ngày ----------
+# 1.1 Ban ngày / ban đêm từ Sunrise_Sunset
+if "Sunrise_Sunset" in df_clean.columns:
+    df_clean["Is_Daytime"] = (
+        df_clean["Sunrise_Sunset"].astype(str).str.strip().str.lower() == "day"
+    )
+else:
+    print("[CẢNH BÁO] Không tìm thấy Sunrise_Sunset, bỏ qua Is_Daytime.")
+
+# ---------- 2. Đặc trưng phái sinh từ thời tiết ----------
+# 2.1 Có mưa/tuyết hay không
+df_clean["Is_Precipitation"] = df_clean["Precipitation(in)"] > 0
+
+# 2.2 Nhóm ngữ nghĩa thời tiết (101 → 7)
+def classify_weather(cond) -> str:
+    """Gom ~101 giá trị Weather_Condition thành 7 nhóm lớn có ý nghĩa nghiệp vụ."""
+    if not isinstance(cond, str):
+        return "Other"
+    c = cond.lower()
+    # Ưu tiên: tuyết > bão > sương mù > mưa > nhiều mây > trong
+    if any(k in c for k in ["snow", "sleet", "ice", "wintry", "blizzard"]):
+        return "Snow"
+    if any(k in c for k in ["thunder", "storm", "tornado"]):
+        return "Storm"
+    if any(k in c for k in ["fog", "mist", "haze", "smoke"]):
+        return "Fog"
+    if any(k in c for k in ["rain", "drizzle", "shower"]):
+        return "Rain"
+    if any(k in c for k in ["cloud", "overcast"]):
+        return "Cloudy"
+    if any(k in c for k in ["clear", "fair"]):
+        return "Clear"
+    return "Other"
+
+df_clean["Weather_Group"] = df_clean["Weather_Condition"].apply(classify_weather)
+
+# 2.3 Mức tầm nhìn
+def classify_visibility(v) -> str:
+    if pd.isna(v):  return "Unknown"
+    if v < 1:       return "Very_Low"
+    if v < 3:       return "Low"
+    if v < 6:       return "Medium"
+    return "High"
+
+df_clean["Visibility_Level"] = df_clean["Visibility(mi)"].apply(classify_visibility)
+
+# 2.4 Mức nhiệt độ
+def classify_temp(t) -> str:
+    if pd.isna(t):  return "Unknown"
+    if t < 32:      return "Freezing"
+    if t < 50:      return "Cold"
+    if t < 70:      return "Mild"
+    return "Hot"
+
+df_clean["Temp_Level"] = df_clean["Temperature(F)"].apply(classify_temp)
+
+# 2.5 Đánh dấu thời tiết xấu
+adverse_groups = {"Rain", "Snow", "Fog", "Storm"}
+df_clean["Is_Adverse_Weather"] = df_clean["Weather_Group"].isin(adverse_groups)
+
+# 2.6 Đánh dấu tầm nhìn thấp
+df_clean["Is_Low_Visibility"] = df_clean["Visibility(mi)"] < 1.0
+
+# ---------- 3. Điểm quan tâm trên đường (POI) — ép kiểu bool ----------
+poi_cols = [
+    "Amenity", "Bump", "Crossing", "Give_Way", "Junction",
+    "No_Exit", "Railway", "Roundabout", "Station", "Stop",
+    "Traffic_Calming", "Traffic_Signal", "Turning_Loop",
+]
+poi_cols_existing = [c for c in poi_cols if c in df_clean.columns]
+for col in poi_cols_existing:
+    df_clean[col] = df_clean[col].astype(bool)
+
+# ---------- 4. Kiểm tra kết quả ----------
+weather_feature_cols = [
+    "Is_Daytime", "Is_Precipitation", "Weather_Group",
+    "Visibility_Level", "Temp_Level",
+    "Is_Adverse_Weather", "Is_Low_Visibility",
+]
+
+print("=" * 70)
+print("CÁC ĐẶC TRƯNG THỜI TIẾT ĐÃ TẠO")
+print("=" * 70)
+for col in weather_feature_cols:
+    if col in df_clean.columns:
+        print(f"  - {col:22s} | dtype={str(df_clean[col].dtype):10s} | "
+              f"n_unique={df_clean[col].nunique():3d} | "
+              f"missing={df_clean[col].isna().sum():,}")
+
+print("\n" + "=" * 70)
+print("CÁC ĐẶC TRƯNG POI ĐÃ ÉP KIỂU BOOL")
+print("=" * 70)
+for col in poi_cols_existing:
+    print(f"  - {col:20s} | True={df_clean[col].sum():>10,} "
+          f"({df_clean[col].mean()*100:5.2f}%)")
+
+# Assert không có missing trong các đặc trưng mới
+for col in weather_feature_cols:
+    if col in df_clean.columns:
+        assert df_clean[col].isna().sum() == 0, f"Cột {col} còn NaN."
+
+# Assert miền giá trị hợp lệ
+assert set(df_clean["Weather_Group"].unique()) <= \
+    {"Clear", "Cloudy", "Rain", "Snow", "Fog", "Storm", "Other"}, \
+    "Weather_Group có giá trị lạ."
+assert set(df_clean["Visibility_Level"].unique()) <= \
+    {"Very_Low", "Low", "Medium", "High", "Unknown"}, \
+    "Visibility_Level có giá trị lạ."
+assert set(df_clean["Temp_Level"].unique()) <= \
+    {"Freezing", "Cold", "Mild", "Hot", "Unknown"}, \
+    "Temp_Level có giá trị lạ."
+assert df_clean["Is_Daytime"].dtype == bool, "Is_Daytime phải là kiểu bool."
+
+print(f"\nTổng số cột hiện tại: {len(df_clean.columns)}")
+
+# ---------- 5. Xem mẫu 5 dòng ----------
+preview_cols = [
+    "Start_Time", "Weather_Condition", "Weather_Group",
+    "Is_Precipitation", "Visibility(mi)", "Visibility_Level",
+    "Temperature(F)", "Temp_Level",
+    "Is_Adverse_Weather", "Is_Low_Visibility", "Is_Daytime",
+]
+preview_cols = [c for c in preview_cols if c in df_clean.columns]
+df_clean[preview_cols].head()
+
+=== Cell 15 (code) ===
+TEST_SIZE_RATIO = 0.20
+
+df_clean.sort_values("Start_Time", inplace=True)
+df_clean.reset_index(drop=True, inplace=True)
+
+# 80% giai đoạn đầu cho train, 20% giai đoạn cuối cho test.
+split_idx = int(len(df_clean) * (1 - TEST_SIZE_RATIO))
+split_idx = max(1, min(split_idx, len(df_clean) - 1))
+
+split_date = df_clean.loc[split_idx, "Start_Time"]
+
+train_df = df_clean.iloc[:split_idx].copy()
+test_df = df_clean.iloc[split_idx:].copy()
+
+print(f"Moc chia (split date) : {split_date}")
+print(
+    f"Train set : {train_df.shape[0]:,} dong "
+    f"({train_df['Start_Time'].min()} -> {train_df['Start_Time'].max()})"
+)
+print(
+    f"Test set  : {test_df.shape[0]:,} dong "
+    f"({test_df['Start_Time'].min()} -> {test_df['Start_Time'].max()})"
+)
+
+# Kiểm tra không có chồng lấn thời gian giữa train và test.
+assert train_df["Start_Time"].max() <= test_df["Start_Time"].min(),     "Phat hien chong lan thoi gian giua train/test!"
+
+print("\n[OK] Khong co data leakage ve mat thoi gian giua train va test.")
+
+
+=== Cell 19 (markdown) ===
+## 8. Ghi chú Git — không commit dữ liệu thô/lớn
+
+Vì notebook đã dùng **KaggleHub** để tải dataset tự động, không cần commit file CSV lớn vào Git.
+
+Có thể thêm các dòng sau vào `.gitignore` ở gốc repository:
+
+```text
+# Du lieu tho va du lieu da xu ly (qua lon cho Git)
+data/raw/*
+data/*.csv
+!data/.gitkeep
+```
+
+Khi thành viên khác chạy notebook, chỉ cần cài `kagglehub` và có quyền truy cập dataset Kaggle. Notebook sẽ tự tải dữ liệu bằng:
+
+`kagglehub.dataset_download("sobhanmoosavi/us-accidents")`
+
