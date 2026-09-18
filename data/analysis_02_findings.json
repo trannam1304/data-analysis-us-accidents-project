@@ -1,0 +1,36 @@
+{
+  "source_notebook": "02_descriptive_diagnostic.ipynb",
+  "record_count": 2972890,
+  "period_start": "2021-03-31T23:37:00",
+  "period_end": "2023-03-31T23:30:00",
+  "rain_accident_pct": 6.38,
+  "high_severity_rain_pct": 9.76,
+  "high_severity_nonrain_pct": 8.14,
+  "top_cities": [
+    {
+      "city": "Miami",
+      "share_pct": 3.8
+    },
+    {
+      "city": "Orlando",
+      "share_pct": 2.2
+    },
+    {
+      "city": "Los Angeles",
+      "share_pct": 1.92
+    }
+  ],
+  "peak_hour": 16,
+  "peak_hour_pct": 8.49,
+  "storm_months": [
+    6,
+    7,
+    8,
+    9,
+    10
+  ],
+  "storm_month_accident_pct": 40.21,
+  "low_visibility_threshold_mi": 2.0,
+  "high_severity_low_visibility_pct": 6.91,
+  "high_severity_normal_visibility_pct": 8.29
+}
